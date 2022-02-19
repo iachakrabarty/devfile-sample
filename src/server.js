@@ -1,14 +1,16 @@
 const Prometheus = require('prom-client')
 const express = require('express');
 const http = require('http');
+const { MongoClient } = require('mongodb');
+
 
 Prometheus.collectDefaultMetrics();
 
 const requestHistogram = new Prometheus.Histogram({
-    name: 'http_request_duration_seconds',
-    help: 'Duration of HTTP requests in seconds',
-    labelNames: ['code', 'handler', 'method'],
-    buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]
+  name: 'http_request_duration_seconds',
+  help: 'Duration of HTTP requests in seconds',
+  labelNames: ['code', 'handler', 'method'],
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5]
 })
 
 const requestTimer = (req, res, next) => {
@@ -28,13 +30,15 @@ const requestTimer = (req, res, next) => {
 const app = express();
 const server = http.createServer(app)
 
+const mongo_uri = "mongodb://localhost:27017/?ssl=false";
+
 // See: http://expressjs.com/en/4x/api.html#app.settings.table
 const PRODUCTION = app.get('env') === 'production';
 
 // Administrative routes are not timed or logged, but for non-admin routes, pino
 // overhead is included in timing.
-app.get('/ready', (req, res) => res.status(200).json({status:"ok"}));
-app.get('/live', (req, res) => res.status(200).json({status:"ok"}));
+app.get('/ready', (req, res) => res.status(200).json({ status: "ok" }));
+app.get('/live', (req, res) => res.status(200).json({ status: "ok" }));
 app.get('/metrics', (req, res, next) => {
   res.set('Content-Type', Prometheus.register.contentType)
   res.end(Prometheus.register.metrics())
@@ -47,13 +51,39 @@ app.use(requestTimer);
 const pino = require('pino')({
   level: PRODUCTION ? 'info' : 'debug',
 });
-app.use(require('pino-http')({logger: pino}));
+app.use(require('pino-http')({ logger: pino }));
 
-app.get('/', (req, res) => {	
+app.get('/', (req, res) => {
   // Use req.log (a `pino` instance) to log JSON:	
-  req.log.info({message: 'Hello from Node.js Starter Application!'});		
-  res.send('Hello from Node.js Starter Application!');	
-});	
+  req.log.info({ message: 'Hello from Node.js Starter Application!' });
+  res.send('Hello from Node.js Starter Application!');
+});
+
+app.get('/visitor', (req, res) => {
+  console.log(req.headers)
+  const data = {
+    ip: req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip || req.headers['x-real-ip'],
+    time: new Date()
+  };
+
+  let cnt = 0;
+
+  const client = new MongoClient(mongo_uri);
+
+  try {
+    client.connect();
+
+    createListing(client, data);
+
+    cnt = countRec(client);
+
+    const resData = {count: cnt};
+    res.send(resData);
+
+  } catch (e) {
+    console.error(e);
+  }
+});
 
 app.get('*', (req, res) => {
   res.status(404).send("Not Found");
@@ -67,3 +97,15 @@ if (process.argv.length == 3 && process.argv[2] == "console") {
 server.listen(PORT, () => {
   console.log(`App started on PORT ${PORT}`);
 });
+
+async function createListing(client, newListing) {
+  const result = await client.db("hackdb").collection("hackdb").insertOne(newListing);
+  console.log(`New listing created with the following id: ${result.insertedId}`);
+}
+
+async function countRec(client) {
+  const count = await client.db('hackdb').collection("hackdb").countDocuments({});
+  console.log(`Total no of records: ${count}`);
+
+  return count;
+}
